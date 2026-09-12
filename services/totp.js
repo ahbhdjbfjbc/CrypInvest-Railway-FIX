@@ -1,0 +1,8 @@
+const crypto=require('crypto');
+function base32Decode(s){const clean=String(s||'').toUpperCase().replace(/=+$/,'').replace(/[^A-Z2-7]/g,'');let bits='';for(const c of clean){bits+=("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".indexOf(c)).toString(2).padStart(5,'0')}const bytes=[];for(let i=0;i+8<=bits.length;i+=8)bytes.push(parseInt(bits.slice(i,i+8),2));return Buffer.from(bytes)}
+function base32Encode(buf){let bits='';for(const b of buf)bits+=b.toString(2).padStart(8,'0');let out='';for(let i=0;i<bits.length;i+=5){const chunk=bits.slice(i,i+5).padEnd(5,'0');out+="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[parseInt(chunk,2)]}return out.padEnd(Math.ceil(out.length/8)*8,'=')}
+function generateSecret(){return base32Encode(crypto.randomBytes(20))}
+function hotp(secret,counter){const key=base32Decode(secret);const b=Buffer.alloc(8);b.writeBigUInt64BE(BigInt(counter));const h=crypto.createHmac('sha1',key).update(b).digest();const o=h[19]&15;const code=((h.readUInt32BE(o)&0x7fffffff)%1000000).toString().padStart(6,'0');return code}
+function verifyTotp(secret,token,window=1){const t=String(token||'').replace(/\s+/g,'');if(!/^\d{6}$/.test(t))return false;const step=Math.floor(Date.now()/1000/30);for(let d=-window;d<=window;d++){if(crypto.timingSafeEqual(Buffer.from(hotp(secret,step+d)),Buffer.from(t)))return true}return false}
+function otpAuthUrl(secret,email,issuer='CrypInvest'){return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`}
+module.exports={generateSecret,verifyTotp,otpAuthUrl};

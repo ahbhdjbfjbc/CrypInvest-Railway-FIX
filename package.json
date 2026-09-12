@@ -1,0 +1,39 @@
+{
+  "name": "crypinvest-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Crypto investment platform with user dashboard and admin operations.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test:syntax": "node tests/syntax-check.js",
+    "test": "node --test tests/*.test.js",
+    "bootstrap:admin": "node scripts/bootstrap-admin.js",
+    "preflight": "node scripts/preflight.js",
+    "db:smoke": "node scripts/db-smoke.js",
+    "seed:demo": "node scripts/seed-demo.js",
+    "backup:db": "node scripts/db-backup.js",
+    "release:preflight": "node scripts/release-preflight.js",
+    "security:test": "node --test tests/*.test.js",
+    "production:preflight": "node scripts/release-preflight.js",
+    "audit:deps": "npm audit --omit=dev --audit-level=high",
+    "live:chain-test": "node scripts/live-chain-smoke.js",
+    "build": "npm install --ignore-scripts --package-lock-only",
+    "verify:production": "npm run build && npm ci --omit=dev --ignore-scripts && npm run release:preflight"
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "dependencies": {
+    "bcrypt": "6.0.0",
+    "dotenv": "16.4.5",
+    "express": "4.22.2",
+    "express-rate-limit": "7.5.0",
+    "helmet": "8.1.0",
+    "jsonwebtoken": "9.0.2",
+    "mongoose": "8.24.4",
+    "node-cron": "4.2.1"
+  }
+}

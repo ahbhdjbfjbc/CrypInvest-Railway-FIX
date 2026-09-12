@@ -1,0 +1,3 @@
+const mongoose=require('mongoose');
+const messageSchema=new mongoose.Schema({sender:{type:mongoose.Schema.Types.ObjectId,ref:'User',required:true},body:{type:String,required:true,maxlength:5000},createdAt:{type:Date,default:Date.now}},{_id:false});
+const schema=new mongoose.Schema({user:{type:mongoose.Schema.Types.ObjectId,ref:'User',required:true,index:true},subject:{type:String,required:true,maxlength:200},status:{type:String,enum:['open','pending','resolved','closed'],default:'open',index:true},messages:{type:[messageSchema],default:[]},assignedTo:{type:mongoose.Schema.Types.ObjectId,ref:'User',default:null}},{timestamps:true});schema.index({status:1,updatedAt:-1});module.exports=mongoose.model('SupportTicket',schema);
