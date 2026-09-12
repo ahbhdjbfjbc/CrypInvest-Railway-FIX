@@ -32,7 +32,8 @@
     "express": "4.22.2",
     "express-rate-limit": "7.5.0",
     "helmet": "8.1.0",
-    "jsonwebtoken": "9.0.2",
+    "jsonwebtoken": "^9.0.2",
+    "jws": "^4.0.1",
     "mongoose": "8.24.4",
     "node-cron": "4.2.1"
   }
