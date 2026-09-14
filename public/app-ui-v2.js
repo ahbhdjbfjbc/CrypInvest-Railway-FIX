@@ -1,488 +1,79 @@
-(() => {
-  "use strict";
-
-  const API_BASE = (localStorage.getItem("novax_api_base") || "/api").replace(/\/$/, "");
-  const TOKEN_KEY = "novax_jwt";
-  const $ = (s, root=document) => root.querySelector(s);
-  const $$ = (s, root=document) => [...root.querySelectorAll(s)];
-
-  const state = {
-    screen: "home",
-    marketFilter: "all",
-    market: [],
-    plans: [],
-    wallet: { total: 2548.32, available: 2548.32, reserved: 0, deposits: 0, withdrawals: 0, change: 3.18 },
-    deposit: { asset: "USDT", network: "TRC20", address: "" },
-    withdraw: { asset: "USDT", network: "TRC20", fee: 1 },
-    user: null,
-    favorites: JSON.parse(localStorage.getItem("novax_favorites") || "[]")
-  };
-
-  const demoCoins = [
-    {symbol:"BTC",name:"Bitcoin",price:64832.21,change:2.45,cls:"coin-btc"},
-    {symbol:"ETH",name:"Ethereum",price:3248.17,change:1.82,cls:"coin-eth"},
-    {symbol:"BNB",name:"BNB",price:582.36,change:1.21,cls:"coin-bnb"},
-    {symbol:"SOL",name:"Solana",price:168.45,change:3.06,cls:"coin-sol"},
-    {symbol:"XRP",name:"XRP",price:0.52,change:1.05,cls:"coin-xrp"},
-    {symbol:"ADA",name:"Cardano",price:0.45,change:0.87,cls:"coin-ada"},
-    {symbol:"DOGE",name:"Dogecoin",price:0.1224,change:2.17,cls:"coin-doge"}
-  ];
-
-  const demoPlans = [
-    {id:"starter",name:"Starter",roi:1.5,min:100,max:2100,icon:"♛",cls:"green"},
-    {id:"growth",name:"Growth",roi:2.5,min:50,max:500,icon:"♛",cls:"blue"},
-    {id:"advanced",name:"Advanced",roi:3.5,min:100,max:1000,icon:"♛",cls:"pink"},
-    {id:"premium",name:"Premium",roi:5.0,min:2500,max:50000,icon:"♛",cls:"green"},
-    {id:"elite",name:"Elite",roi:7.0,min:5000,max:100000,icon:"♛",cls:"red"}
-  ];
-
-  function num(v){ const n=Number(v); return Number.isFinite(n) ? n : 0; }
-  function money(v, digits=2){ return "$" + num(v).toLocaleString("en-US",{minimumFractionDigits:digits,maximumFractionDigits:digits}); }
-  function assetMoney(v){ return num(v).toLocaleString("en-US",{minimumFractionDigits:4,maximumFractionDigits:4}) + " USDT"; }
-  function pct(v){ return (num(v) >= 0 ? "+" : "") + num(v).toFixed(2) + "%"; }
-  function esc(v){ return String(v ?? "").replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
-  function toast(message){ const el=$("#toast"); el.textContent=message; el.classList.add("show"); clearTimeout(toast.t); toast.t=setTimeout(()=>el.classList.remove("show"),2800); }
-  function setMessage(id,msg,type=""){ const el=$("#"+id); if(!el)return; el.textContent=msg; el.className="form-message"+(type?" "+type:""); }
-
-  async function apiFetch(path, options={}){
-    const headers = {"Content-Type":"application/json", ...(options.headers||{})};
-    const token = localStorage.getItem(TOKEN_KEY);
-    if(token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(`${API_BASE}${path}`, {...options, headers});
-    let data = null;
-    try { data = await res.json(); } catch(_){ data = {}; }
-    if(!res.ok){
-      const message = data?.message || data?.error || `HTTP ${res.status}`;
-      throw new Error(message);
-    }
-    return data;
-  }
-
-  /* Ready-to-connect API functions requested */
-  async function loginAPI(email, password, twoFactorCode=""){
-    return apiFetch("/auth/login",{method:"POST",body:JSON.stringify({email,password,twoFactorCode})});
-  }
-  async function getWalletBalanceAPI(){
-    return apiFetch("/wallet/balance");
-  }
-  async function getLivePricesAPI(){
-    return apiFetch("/market/prices?symbols=BTC,ETH,BNB");
-  }
-  async function depositAPI(payload){
-    return apiFetch("/wallet/deposit",{method:"POST",body:JSON.stringify(payload)});
-  }
-  async function withdrawAPI(payload){
-    return apiFetch("/wallet/withdraw",{method:"POST",body:JSON.stringify(payload)});
-  }
-
-  // Expose API helpers for easy backend integration/debugging.
-  window.NovaXAPI = { apiFetch, loginAPI, getWalletBalanceAPI, getLivePricesAPI, depositAPI, withdrawAPI };
-
-  function showScreen(name, updateHash=true){
-    const target = name === "dashboard" ? "wallet" : name;
-    if(!$("#screen-"+target)) return;
-    state.screen = target;
-    $$(".screen").forEach(el => el.classList.toggle("active-screen", el.id === "screen-"+target));
-    const active = ["home","market","plans","wallet","profile"].includes(target) ? target : "";
-    $$(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.screen===active));
-    $("#topbarTitle").textContent = $("#screen-"+target)?.dataset.title || "NovaX";
-    if(updateHash) history.replaceState(null,"","#"+target);
-    window.scrollTo({top:0,behavior:"smooth"});
-  }
-
-  function coinIcon(c){
-    const cls = c.cls || ({
-      BTC:"coin-btc",ETH:"coin-eth",BNB:"coin-bnb",SOL:"coin-sol",
-      XRP:"coin-xrp",ADA:"coin-ada",DOGE:"coin-doge"
-    }[c.symbol]||"coin-xrp");
-    const mark = ({BTC:"₿",ETH:"Ξ",BNB:"◆",SOL:"S",XRP:"X",ADA:"A",DOGE:"Ð"}[c.symbol]||"?");
-    return `<span class="coin-icon ${cls}">${mark}</span>`;
-  }
-
-  function seedData(){
-    state.market = demoCoins.map(x=>({...x, fav:state.favorites.includes(x.symbol)}));
-    state.plans = demoPlans.slice();
-  }
-
-  function renderTickers(){
-    const items = state.market.slice(0,4);
-    $("#homeTickers").innerHTML = items.map(c => `
-      <div class="ticker-card">
-        ${coinIcon(c)}
-        <div class="ticker-mid"><b>${esc(c.symbol)}</b><small>${esc(c.name)}</small></div>
-        <em>${pct(c.change)}</em>
-      </div>`).join("");
-  }
-
-  function renderHomePlans(){
-    $("#homePlans").innerHTML = state.plans.slice(0,2).map((p,i)=>`
-      <div class="mini-plan panel">
-        <span class="plan-badge ${p.cls==='blue'?'blue':p.cls==='pink'?'pink':''}">${esc(p.icon)}</span>
-        <div class="mini-plan-main"><strong>${esc(p.name)}</strong><small>$${num(p.min).toLocaleString()} — $${num(p.max).toLocaleString()}</small></div>
-        <span class="mini-plan-roi">${num(p.roi).toFixed(1)}%</span>
-      </div>`).join("");
-  }
-
-  function renderPlans(){
-    $("#plansList").innerHTML = state.plans.map((p,i)=>`
-      <article class="plan-card panel">
-        <div class="plan-meta">
-          <span class="plan-badge ${p.cls==='blue'?'blue':p.cls==='pink'?'pink':p.cls==='red'?'pink':''}">${esc(p.icon)}</span>
-        </div>
-        <div>
-          <h3>${esc(p.name)}</h3>
-          <div class="plan-return"><strong>${num(p.roi).toFixed(1)}%</strong><span>العائد</span></div>
-          <div class="plan-limits"><span>من $${num(p.min).toLocaleString()}</span><span>إلى $${num(p.max).toLocaleString()}</span></div>
-        </div>
-        <div class="plan-cta"><small class="muted">خطة مرنة</small><button class="btn btn-gold small" data-action="invest" data-plan="${esc(p.id)}">استثمر الآن</button></div>
-      </article>`).join("");
-  }
-
-  function miniSpark(change){
-    const amp = Math.min(18, Math.max(6, Math.abs(num(change))*5));
-    const dir = num(change)>=0 ? -1 : 1;
-    const y2 = 28 + dir*amp;
-    const stroke = num(change)>=0 ? "#00df9a" : "#ff4d68";
-    return `<svg viewBox="0 0 120 38" preserveAspectRatio="none">
-      <path d="M0 30 C10 28 14 22 25 25 S42 14 54 22 S72 18 82 20 S98 7 120 ${y2}" fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round"/>
-    </svg>`;
-  }
-
-  function renderMarket(){
-    const q = ($("#marketSearch")?.value||"").trim().toLowerCase();
-    let list = state.market.filter(c => `${c.symbol} ${c.name}`.toLowerCase().includes(q));
-    if(state.marketFilter==="favorites") list = list.filter(c=>c.fav);
-    if(state.marketFilter==="gainers") list = list.filter(c=>c.change>0).sort((a,b)=>b.change-a.change);
-    if(state.marketFilter==="losers") list = list.filter(c=>c.change<0).sort((a,b)=>a.change-b.change);
-    $("#marketList").innerHTML = list.map(c=>`
-      <div class="market-row">
-        <div class="market-coin">
-          ${coinIcon(c)}
-          <div><b>${esc(c.symbol)}</b><small>${esc(c.name)}</small></div>
-        </div>
-        <div class="spark">${miniSpark(c.change)}</div>
-        <div class="market-price">${money(c.price, c.price<1?4:2)}</div>
-        <div class="market-change ${c.change>=0?'up':'down'}">${pct(c.change)}</div>
-        <button class="favorite ${c.fav?'active':''}" data-action="favorite" data-symbol="${esc(c.symbol)}">★</button>
-      </div>`).join("") || `<div class="empty-state">لا توجد نتائج.</div>`;
-  }
-
-  function renderWallet(){
-    $("#walletTotal").textContent = money(state.wallet.total);
-    $("#walletAvailable").textContent = money(state.wallet.available);
-    $("#walletReserved").textContent = money(state.wallet.reserved);
-    $("#walletDeposits").textContent = money(state.wallet.deposits);
-    $("#walletWithdrawals").textContent = money(state.wallet.withdrawals);
-    $("#walletChange").textContent = pct(state.wallet.change);
-    $("#withdrawBalance").textContent = money(state.wallet.available);
-    const holdings = [
-      {symbol:"USDT",name:"Tether",amount:1250,value:1250,change:"+ $1,250.00"},
-      {symbol:"BTC",name:"Bitcoin",amount:.0421,value:2421.21,change:"+ $2,421.21"},
-      {symbol:"ETH",name:"Ethereum",amount:.2156,value:698.32,change:"+ $698.32"},
-      {symbol:"BNB",name:"BNB",amount:.3264,value:189.76,change:"+ $189.76"},
-      {symbol:"SOL",name:"Solana",amount:1.2458,value:717.53,change:"+ $717.53"}
-    ];
-    $("#holdingsList").innerHTML = holdings.map(h=>`
-      <div class="holding-row">
-        <div class="holding-main">${coinIcon({...h,cls: h.symbol==="USDT"?"coin-sol":undefined})}<div><b>${esc(h.symbol)}</b><small>${esc(h.name)}</small></div></div>
-        <div class="holding-value"><b>${num(h.amount).toLocaleString("en-US",{maximumFractionDigits:4})}</b><small>${esc(h.change)}</small></div>
-        <div>${money(h.value)}</div>
-      </div>`).join("");
-  }
-
-  function renderReferrals(){
-    const list = [
-      {name:"Ahmed123",date:"2026-09-10 12:45",reward:60,initial:"A"},
-      {name:"SaraPro",date:"2026-09-09 18:20",reward:30,initial:"S"},
-      {name:"AllCrypto",date:"2026-09-08 14:12",reward:30,initial:"A"}
-    ];
-    $("#referralList").innerHTML = list.map(r=>`
-      <div class="ref-row"><span class="ref-avatar">${esc(r.initial)}</span><div><b>${esc(r.name)}</b><small>${esc(r.date)}</small></div><em>+$${num(r.reward).toFixed(2)}</em></div>`).join("");
-  }
-
-  async function refreshWallet(){
-    try{
-      const data = await getWalletBalanceAPI();
-      const w = data?.wallet ?? data?.data?.wallet ?? data?.data ?? data;
-      state.wallet.total = num(w?.total ?? w?.balance ?? state.wallet.total);
-      state.wallet.available = num(w?.available ?? w?.availableBalance ?? state.wallet.available);
-      state.wallet.reserved = num(w?.reserved ?? w?.locked ?? state.wallet.reserved);
-      state.wallet.deposits = num(w?.totalDeposits ?? state.wallet.deposits);
-      state.wallet.withdrawals = num(w?.totalWithdrawals ?? state.wallet.withdrawals);
-      renderWallet();
-      toast("تم تحديث رصيد المحفظة.");
-    }catch(err){
-      toast("تعذر جلب الرصيد من الـAPI، تم عرض البيانات الحالية.");
-    }
-  }
-
-  async function refreshPrices(){
-    try{
-      const data = await getLivePricesAPI();
-      const list = data?.prices ?? data?.data?.prices ?? data?.data ?? data;
-      if(Array.isArray(list)){
-        state.market = list.map(x=>({
-          symbol:String(x.symbol||"").toUpperCase(),
-          name:x.name||x.symbol,
-          price:num(x.price),
-          change:num(x.change24h ?? x.change),
-          cls:({"BTC":"coin-btc","ETH":"coin-eth","BNB":"coin-bnb","SOL":"coin-sol"}[String(x.symbol||"").toUpperCase()]||"coin-xrp"),
-          fav:state.favorites.includes(String(x.symbol||"").toUpperCase())
-        }));
-        renderTickers(); renderMarket();
-      }
-    }catch(err){
-      toast("تعذر جلب الأسعار الحية، تم استخدام البيانات الاحتياطية للعرض.");
-    }
-  }
-
-  async function handleLogin(e){
-    e.preventDefault();
-    const email=$("#loginEmail").value.trim(), password=$("#loginPassword").value;
-    setMessage("loginMessage","جاري تسجيل الدخول...");
-    try{
-      const data = await loginAPI(email,password,"");
-      const token = data?.token ?? data?.accessToken ?? data?.data?.token;
-      if(!token) throw new Error("لم يُرجع الـBackend توكن JWT.");
-      localStorage.setItem(TOKEN_KEY,token);
-      state.user = data?.user ?? data?.data?.user ?? null;
-      setMessage("loginMessage","تم تسجيل الدخول بنجاح.","success");
-      toast("مرحباً بك في NovaX.");
-      showScreen("wallet");
-      refreshWallet();
-    }catch(err){
-      setMessage("loginMessage",`فشل تسجيل الدخول: ${err.message}`,"error");
-    }
-  }
-
-  async function handleRegister(e){
-    e.preventDefault();
-    const payload = {
-      name:$("#registerName").value.trim(),
-      email:$("#registerEmail").value.trim(),
-      password:$("#registerPassword").value,
-      referralCode:$("#registerReferral").value.trim()
-    };
-    setMessage("registerMessage","جاري إنشاء الحساب...");
-    try{
-      const data = await apiFetch("/auth/register",{method:"POST",body:JSON.stringify(payload)});
-      setMessage("registerMessage",data?.message||"تم إنشاء الحساب بنجاح.","success");
-      toast("تم إنشاء الحساب.");
-      setTimeout(()=>showScreen("login"),500);
-    }catch(err){
-      setMessage("registerMessage",`تعذر إنشاء الحساب: ${err.message}`,"error");
-    }
-  }
-
-  async function handleForgot(e){
-    e.preventDefault();
-    setMessage("forgotMessage","جاري إرسال الطلب...");
-    try{
-      const data = await apiFetch("/auth/forgot-password",{method:"POST",body:JSON.stringify({email:$("#forgotEmail").value.trim()})});
-      setMessage("forgotMessage",data?.message||"تم إرسال الطلب.","success");
-    }catch(err){
-      setMessage("forgotMessage",`تعذر إرسال الطلب: ${err.message}`,"error");
-    }
-  }
-
-  async function submitDeposit(e){
-    e.preventDefault();
-    const amount=num($("#depositAmount").value);
-    if(amount<=0){ setMessage("depositMessage","أدخل مبلغاً صالحاً.","error"); return; }
-    setMessage("depositMessage","جاري إرسال طلب الإيداع...");
-    try{
-      const data=await depositAPI({
-        asset:state.deposit.asset,
-        network:state.deposit.network,
-        amount,
-        txHash:$("#depositTx").value.trim()
-      });
-      setMessage("depositMessage",data?.message||"تم إرسال طلب الإيداع.","success");
-      toast("تم إرسال طلب الإيداع.");
-    }catch(err){
-      setMessage("depositMessage",`تعذر تنفيذ الإيداع: ${err.message}`,"error");
-    }
-  }
-
-  async function submitWithdraw(e){
-    e.preventDefault();
-    const amount=num($("#withdrawAmount").value);
-    const address=$("#withdrawAddress").value.trim();
-    if(!address || amount<=0){ setMessage("withdrawMessage","أدخل عنواناً ومبلغاً صالحين.","error"); return; }
-    setMessage("withdrawMessage","جاري تنفيذ طلب السحب...");
-    try{
-      const data=await withdrawAPI({
-        asset:$("#withdrawAsset").value,
-        network:state.withdraw.network,
-        address,
-        amount
-      });
-      setMessage("withdrawMessage",data?.message||"تم إرسال طلب السحب.","success");
-      toast("تم إرسال طلب السحب.");
-      await refreshWallet();
-    }catch(err){
-      setMessage("withdrawMessage",`تعذر تنفيذ السحب: ${err.message}`,"error");
-    }
-  }
-
-  async function loadDepositAddress(){
-    $("#qrStatus").textContent="يتم تحميل عنوان الإيداع...";
-    try{
-      const data=await apiFetch(`/wallet/deposit-address?asset=${encodeURIComponent(state.deposit.asset)}&network=${encodeURIComponent(state.deposit.network)}`);
-      const address = data?.address ?? data?.depositAddress ?? data?.data?.address;
-      if(!address) throw new Error("الـBackend لم يُرجع عنواناً.");
-      state.deposit.address = String(address);
-      $("#depositAddress").textContent=state.deposit.address;
-      $("#qrStatus").textContent="QR مرتبط بالعنوان الذي أرجعه الـAPI.";
-      generateQrLikeCode(state.deposit.address);
-    }catch(err){
-      state.deposit.address="";
-      $("#depositAddress").textContent="لا يوجد عنوان مؤكد";
-      $("#qrStatus").textContent="تعذر جلب عنوان حقيقي من الـBackend؛ لا يتم إنشاء QR وهمي.";
-      generateQrLikeCode("");
-    }
-  }
-
-  function generateQrLikeCode(text){
-    const el=$("#depositQr");
-    if(!text){ el.style.backgroundImage="none"; el.innerHTML=""; return; }
-    // Visual QR pattern only. For production, replace with a standards-compliant QR library
-    // and encode exactly the same verified address returned by the backend.
-    const seed=[...text].reduce((a,c)=>a+c.charCodeAt(0),0);
-    let cells="";
-    for(let i=0;i<121;i++) cells += ((i*31+seed)%7<3) ? "■" : "";
-    el.textContent=cells;
-  }
-
-  function setDepositAsset(asset){
-    state.deposit.asset=asset;
-    $$("#depositAssets .asset-tab").forEach(b=>b.classList.toggle("active",b.dataset.asset===asset));
-    loadDepositAddress();
-  }
-  function setDepositNetwork(network, scope="deposit"){
-    state[scope].network=network;
-    $$("#"+(scope==="deposit"?"depositNetworks":"withdrawNetworks")+" .network-tab").forEach(b=>b.classList.toggle("active",b.dataset.network===network));
-    if(scope==="deposit") loadDepositAddress();
-  }
-
-  async function shareReferral(kind){
-    const link=$("#referralLink").textContent.trim();
-    try{
-      if(kind==="copy"){ await navigator.clipboard.writeText(link); toast("تم نسخ رابط الإحالة."); return; }
-      if(kind==="native" && navigator.share){ await navigator.share({title:"NovaX",text:"انضم إلى NovaX عبر رابط الإحالة",url:link}); return; }
-      if(kind==="telegram"){ window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("انضم إلى NovaX")}`,"_blank","noopener"); return; }
-      if(kind==="whatsapp"){ window.open(`https://wa.me/?text=${encodeURIComponent("انضم إلى NovaX: "+link)}`,"_blank","noopener"); return; }
-      await navigator.clipboard.writeText(link); toast("تم نسخ الرابط.");
-    }catch(_){ toast("تعذر تنفيذ المشاركة من هذا المتصفح."); }
-  }
-
-  async function copyText(text,message){
-    try{ await navigator.clipboard.writeText(text); toast(message||"تم النسخ."); }
-    catch(_){ toast("تعذر النسخ تلقائياً."); }
-  }
-
-  function logout(){
-    localStorage.removeItem(TOKEN_KEY);
-    state.user=null;
-    toast("تم تسجيل الخروج.");
-    showScreen("login");
-  }
-
-  async function socialLogin(provider){
-    try{
-      const data = await apiFetch(`/auth/${provider}`,{method:"POST",body:JSON.stringify({provider})});
-      const token=data?.token ?? data?.accessToken ?? data?.data?.token;
-      if(!token) throw new Error("OAuth endpoint لم يُرجع JWT.");
-      localStorage.setItem(TOKEN_KEY,token);
-      toast(`تم تسجيل الدخول عبر ${provider==="google"?"Google":"Apple"}.`);
-      showScreen("wallet");
-      refreshWallet();
-    }catch(err){
-      toast(`تسجيل ${provider} يحتاج OAuth/Backend جاهز: ${err.message}`);
-    }
-  }
-
-  function maybeRestoreSession(){
-    const token=localStorage.getItem(TOKEN_KEY);
-    if(token){
-      // We keep the JWT and load the wallet. Do not fabricate user identity.
-      refreshWallet();
-    }
-  }
-
-  document.addEventListener("click", e=>{
-    const screenBtn=e.target.closest("[data-screen]");
-    if(screenBtn){ e.preventDefault(); showScreen(screenBtn.dataset.screen); return; }
-
-    const action=e.target.closest("[data-action]");
-    if(!action) return;
-
-    const act=action.dataset.action;
-    if(act==="toggle-password"){
-      const input=$("#"+action.dataset.target); if(input) input.type=input.type==="password"?"text":"password";
-    }else if(act==="favorite"){
-      const symbol=action.dataset.symbol;
-      state.favorites=state.favorites.includes(symbol)?state.favorites.filter(x=>x!==symbol):[...state.favorites,symbol];
-      localStorage.setItem("novax_favorites",JSON.stringify(state.favorites));
-      state.market.forEach(c=>{if(c.symbol===symbol)c.fav=!c.fav;});
-      renderMarket(); renderTickers();
-    }else if(act==="copy-address"){
-      const t=state.deposit.address;
-      if(t) copyText(t,"تم نسخ عنوان الإيداع."); else toast("لا يوجد عنوان مؤكد للنسخ.");
-    }else if(act==="copy-referral"){ copyText($("#referralLink").textContent.trim(),"تم نسخ رابط الإحالة."); }
-    else if(act==="refresh-wallet"){ refreshWallet(); }
-    else if(act==="logout"){ logout(); }
-    else if(act==="toast"){ toast(action.dataset.message||"تم"); }
-    else if(act==="google-login"){ socialLogin("google"); }
-    else if(act==="apple-login"){ socialLogin("apple"); }
-    else if(act==="edit-profile"){ toast("يمكن ربط هذا الزر بواجهة تعديل الملف الشخصي لاحقاً."); }
-    else if(act==="invest"){
-      const p=state.plans.find(x=>x.id===action.dataset.plan);
-      if(!p)return;
-      // No native prompt is used. Use a lightweight custom request through a modal-like confirm area.
-      // To keep the three-file requirement and avoid browser prompts, request via an inline toast + wallet destination.
-      showScreen("wallet");
-      toast(`اختر خطة ${p.name} ثم اربط زر الاستثمار بـ POST /investments في الـBackend.`);
-    }
-  });
-
-  // Explicitly prevent native prompt/alert/confirm usage by this UI.
-  // Investment API placeholder intentionally does not pretend a backend contract that was not supplied.
-
-  document.addEventListener("submit", e=>{
-    if(e.target.id==="loginForm") handleLogin(e);
-    if(e.target.id==="registerForm") handleRegister(e);
-    if(e.target.id==="forgotForm") handleForgot(e);
-    if(e.target.id==="depositForm") submitDeposit(e);
-    if(e.target.id==="withdrawForm") submitWithdraw(e);
-  });
-
-  $("#marketSearch").addEventListener("input",renderMarket);
-
-  $$("#screen-market [data-market-filter]").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      state.marketFilter=btn.dataset.marketFilter;
-      $$("#screen-market [data-market-filter]").forEach(x=>x.classList.toggle("active",x===btn));
-      renderMarket();
-    });
-  });
-
-  $$("#depositAssets .asset-tab").forEach(btn=>btn.addEventListener("click",()=>setDepositAsset(btn.dataset.asset)));
-  $$("#depositNetworks .network-tab").forEach(btn=>btn.addEventListener("click",()=>setDepositNetwork(btn.dataset.network,"deposit")));
-  $$("#withdrawNetworks .network-tab").forEach(btn=>btn.addEventListener("click",()=>setDepositNetwork(btn.dataset.network,"withdraw")));
-  $$("#screen-referrals [data-share]").forEach(btn=>btn.addEventListener("click",()=>shareReferral(btn.dataset.share)));
-
-  window.addEventListener("hashchange",()=>showScreen(location.hash.replace("#","")||"home",false));
-  window.addEventListener("popstate",()=>showScreen(location.hash.replace("#","")||"home",false));
-  $("[data-action='back']")?.addEventListener("click",()=>history.back());
-
-  seedData();
-  renderTickers();
-  renderHomePlans();
-  renderPlans();
-  renderMarket();
-  renderWallet();
-  renderReferrals();
-  showScreen(location.hash.replace("#","")||"home",false);
-  maybeRestoreSession();
-})();
+const $=s=>document.querySelector(s),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(path,opts={}){opts.headers={...(opts.headers||{}),'Content-Type':'application/json'};const method=String(opts.method||'GET').toUpperCase();if(!['GET','HEAD','OPTIONS'].includes(method))opts.headers['X-CSRF-Guard']='1';const r=await fetch('/api'+path,{credentials:'same-origin',...opts});const d=await r.json().catch(()=>({message:'استجابة غير صالحة'}));if(!r.ok){const e=new Error(d.message||'فشل الطلب');e.status=r.status;e.data=d;throw e}return d}
+const num=v=>{const n=Number(v);return Number.isFinite(n)?n:0};
+const money=v=>num(v).toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4})+' USDT';
+const usd=v=>'$'+num(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const pct=v=>num(v).toFixed(2)+'%';
+const statusBadge=v=>{const good=['active','completed','approved','verified','processing'].includes(String(v));const cls=good?'':(['pending','review'].includes(String(v))?' warn':' red');return `<span class="badge${cls}">${esc(v||'-')}</span>`};
+const icons={
+ home:'<svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/></svg>',
+ plans:'<svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.4 6 .9-4.35 4.24 1.03 5.98L12 16.7l-5.38 2.83 1.03-5.98L3.3 9.3l6-.9L12 3Z"/></svg>',
+ market:'<svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg>',
+ referrals:'<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="10" r="2.5"/><path d="M14.5 18.5a4.5 4.5 0 0 1 6 0"/></svg>',
+ profile:'<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5 21a7 7 0 0 1 14 0"/></svg>',
+ deposit:'<svg viewBox="0 0 24 24"><path d="M12 4v13"/><path d="m7 12 5 5 5-5"/><path d="M5 20h14"/></svg>',
+ withdraw:'<svg viewBox="0 0 24 24"><path d="M12 20V7"/><path d="m7 12 5-5 5 5"/><path d="M5 4h14"/></svg>',
+ wallet:'<svg viewBox="0 0 24 24"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H19v14H6.5A2.5 2.5 0 0 1 4 16.5z"/><path d="M4 8h13"/><path d="M16 12h3"/></svg>',
+ lock:'<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>',
+ menu:'<svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+ support:'<svg viewBox="0 0 24 24"><path d="M5 6h14v10H9l-4 3z"/><path d="M8 10h8M8 13h5"/></svg>',
+ notifications:'<svg viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>',
+ search:'<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 5 5"/></svg>',
+ shield:'<svg viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>',
+ more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>',
+ apple:'<svg viewBox="0 0 24 24"><path d="M16.7 12.4c0-2 1.6-3 1.7-3.1-.9-1.3-2.4-1.5-2.9-1.5-1.2-.1-2.4.8-3 .8-.6 0-1.5-.8-2.5-.8-1.3 0-2.5.8-3.2 2-.9 1.4-.2 4 0 4.9.6 2 1.8 4.2 3.1 4.2 1.2 0 1.7-.8 3.1-.8 1.4 0 1.8.8 3.1.8 1.3 0 2.2-2 2.8-4 .4-1.2.6-2.3.6-2.5-.1 0-2.7-1-2.7-4Z"/><path d="M15 6.3c.6-.8 1-1.8.9-2.8-.9 0-2 .6-2.6 1.3-.6.7-1.1 1.7-1 2.7 1 .1 2-.4 2.7-1.2Z"/></svg>',
+ google:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 12h-9v-0"/></svg>',
+ share:'<svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.8 7.5-4.2M8.2 13.2l7.5 4.2"/></svg>',
+ user:'<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5 21a7 7 0 0 1 14 0"/></svg>',
+ key:'<svg viewBox="0 0 24 24"><circle cx="8" cy="16" r="3"/><path d="m10.2 13.8 8.8-8.8 2 2-1.7 1.7 1.5 1.5-2 2-1.5-1.5-2.2 2.2"/></svg>',
+ globe:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+ logout:'<svg viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg>'
+};
+const icon=k=>icons[k]||icons.home;
+const coinIcon=s=>{const k=String(s||'').toUpperCase().replace('/USDT','');const logos={BTC:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#f7931a"/><text x="20" y="27" text-anchor="middle" font-size="22" font-weight="900" fill="#fff">₿</text></svg>`,ETH:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#627eea"/><path d="m20 5.5 10 14.8-10 5.8-10-5.8L20 5.5Zm0 23.5 10-6.3-10 12-10-12 10 6.3Z" fill="#fff"/></svg>`,BNB:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#f3ba2f"/><path d="m20 6 4.2 4.2L20 14.4l-4.2-4.2L20 6Zm-7.8 7.8 4.2 4.2-4.2 4.2L8 18l4.2-4.2Zm15.6 0L32 18l-4.2 4.2-4.2-4.2 4.2-4.2ZM20 21.6l4.2 4.2-4.2 4.2-4.2-4.2 4.2-4.2ZM20 15l3 3-3 3-3-3 3-3Z" fill="#fff"/></svg>`,SOL:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#121925"/><path d="m9 13 3-3h19l-4 4H9Zm3 7 4-4h15l-4 4H12Zm1 10 4-4h17l-4 4H13Z" fill="#65e6bf"/></svg>`,XRP:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#0f1821"/><path d="M10 11h3l7 7 7-7h3l-8.5 8.5a2.2 2.2 0 0 1-3 0L10 11Zm20 18h-3l-7-7-7 7h-3l8.5-8.5a2.2 2.2 0 0 1 3 0L30 29Z" fill="#fff"/></svg>`,DOGE:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#c4a52c"/><text x="20" y="28" text-anchor="middle" font-size="23" font-weight="900" fill="#fff">Ð</text></svg>`,ADA:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#2a72d4"/><circle cx="20" cy="20" r="2.2" fill="#fff"/><g fill="#fff"><circle cx="20" cy="8" r="1.1"/><circle cx="20" cy="32" r="1.1"/><circle cx="8" cy="20" r="1.1"/><circle cx="32" cy="20" r="1.1"/><circle cx="11" cy="11" r="1"/><circle cx="29" cy="29" r="1"/><circle cx="29" cy="11" r="1"/><circle cx="11" cy="29" r="1"/></g></svg>`,USDT:`<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#26a17b"/><text x="20" y="27" text-anchor="middle" font-size="17" font-weight="900" fill="#fff">₮</text></svg>`};return logos[k]||`<span class="coinFallback">${esc(k.slice(0,3)||'?')}</span>`};
+function brand(){return `<a class="brand" href="/"><span class="brandMark">C</span><span><b>Cryp</b><em>Invest</em></span></a>`}
+const primaryLinks=[['/','الرئيسية','home'],['/market','الأسواق','market'],['/plans','الاستثمار','plans'],['/dashboard','المحفظة','wallet'],['/more','المزيد','more']];
+const extraLinks=[['/deposit','الإيداع','deposit'],['/withdraw','السحب','withdraw'],['/notifications','الإشعارات','notifications'],['/support','الدعم','support']];
+function nav(active=''){return primaryLinks.filter(x=>x[0]!=='/more').map(x=>`<a class="navLink ${active===x[2]?'active':''}" href="${x[0]}"><span class="navIcon">${icon(x[2])}</span><span>${x[1]}</span></a>`).join('')}
+function mobileNav(active=''){return `<nav class="mobileNav">${primaryLinks.map(x=>x[0]==='/more'?`<button class="mobileMore ${active==='more'?'active':''}" type="button" aria-label="فتح المزيد"><span>${icon('more')}</span><small>${x[1]}</small></button>`:`<a class="${active===x[2]?'active':''}" href="${x[0]}"><span>${icon(x[2])}</span><small>${x[1]}</small></a>`).join('')}</nav>`}
+async function refreshAuthUi(){const a=$('#authAction');if(!a)return;const u=await session();if(u){a.innerHTML=`<a class="accountChip" href="/profile"><span class="accountAvatar">${esc((u.name||'U').slice(0,1))}</span><span class="accountName">${esc(u.name||'حسابي')}</span></a><button class="iconBtn" id="headLogout" type="button" title="تسجيل الخروج">${icon('lock')}</button>`;$('#headLogout')?.addEventListener('click',logout)}else{a.innerHTML=`<a class="textAction" href="/login">تسجيل الدخول</a><a class="btn btnHeader" href="/register">إنشاء حساب</a>`}}
+function layout(title,body,active=''){const pageKey=active||'home';if(active==='dashboard')active='wallet';document.title='CrypInvest | '+title;document.body.innerHTML=`<div class="app page-${esc(pageKey)}"><header class="top"><div class="topInner">${brand()}<nav class="nav">${nav(active)}</nav><div class="headerActions" id="authAction"></div><button class="menuBtn" id="menuBtn" aria-label="فتح القائمة">${icon('menu')}</button></div></header><div id="mobileMenu" class="mobileMenu"><div class="menuGrid">${extraLinks.map(x=>`<a href="${x[0]}"><span>${icon(x[2])}</span>${x[1]}</a>`).join('')}<a href="/profile"><span>${icon('profile')}</span>الملف الشخصي</a><button id="menuLogout" type="button"><span>${icon('lock')}</span>تسجيل الخروج</button></div></div><main class="shell"><div class="pageTitle"><div><span class="kicker">CrypInvest</span><h1>${esc(title)}</h1><p>استثمر بذكاء • تابع أموالك بأمان</p></div></div>${body}</main><div id="support" class="support"></div><footer class="footer">CrypInvest — منصة رقمية لإدارة الاستثمارات</footer>${mobileNav(active)}</div>`;bindLayout();loadSupport();refreshAuthUi()}
+function bindLayout(){const toggle=()=>{$('#mobileMenu')?.classList.toggle('open');document.body.classList.toggle('menuOpen')};const m=$('#menuBtn');if(m)m.addEventListener('click',toggle);document.querySelector('.mobileMore')?.addEventListener('click',toggle);const out=$('#menuLogout');if(out)out.addEventListener('click',logout)}
+async function logout(){try{await api('/auth/logout',{method:'POST'})}finally{location.href='/login'}}
+async function loadSupport(){try{const d=await api('/support');window.__siteConfig=d;const t=d.theme||{};for(const [k,v] of Object.entries({primary:t.primary,secondary:t.secondary,background:t.background,surface:t.surface,border:t.border,text:t.text,muted:t.muted,success:t.success,danger:t.danger})){if(!/^#[0-9a-fA-F]{6}$/.test(String(v||'')))continue;const names={primary:['primary','gold'],secondary:['secondary','gold2'],background:['background','bg'],surface:['surface','panel'],border:['border','line'],text:['text'],muted:['muted'],success:['success','green'],danger:['danger','red']};for(const name of names[k]||[k])document.documentElement.style.setProperty('--'+name,v);}const s=d.support;if(s?.enabled&&s.url){const href=new URL(s.url,location.origin);if(href.protocol==='https:'){const box=$('#support');box.classList.add('hasSupport');box.innerHTML=`<a href="${esc(href.href)}" target="_blank" rel="noopener noreferrer">${icon('support')}<span>${esc(s.label||'الدعم')}</span></a>`}}}catch{}}
+function notify(message){let t=$('#ciToast');if(!t){document.body.insertAdjacentHTML('beforeend','<div class="toast" id="ciToast"></div>');t=$('#ciToast')}t.textContent=String(message||'');t.classList.add('show');clearTimeout(window.__ciToastTimer);window.__ciToastTimer=setTimeout(()=>t.classList.remove('show'),2600)}
+function askText(title,placeholder='اكتب هنا...'){return new Promise(resolve=>{const old=$('#textModal');if(old)old.remove();document.body.insertAdjacentHTML('beforeend',`<div class="modalBackdrop" id="textModal"><section class="modalCard"><button class="modalClose" id="textClose" type="button" aria-label="إغلاق">×</button><span class="kicker">CrypInvest</span><h2>${esc(title)}</h2><textarea class="input textarea" id="textValue" maxlength="5000" placeholder="${esc(placeholder)}"></textarea><div class="modalActions"><button class="btn secondary" id="textCancel" type="button">إلغاء</button><button class="btn" id="textConfirm" type="button">تأكيد</button></div></section></div>`);const close=v=>{$('#textModal')?.remove();resolve(v)};$('#textClose').onclick=()=>close(null);$('#textCancel').onclick=()=>close(null);$('#textModal').addEventListener('click',e=>{if(e.target.id==='textModal')close(null)});$('#textConfirm').onclick=()=>{const v=$('#textValue').value.trim();if(!v){$('#textValue').focus();return}close(v)};$('#textValue').focus()})}
+function publicAnnouncement(){const a=window.__siteConfig?.announcement;if(!a?.enabled)return '';const href=String(a.ctaUrl||'/plans');const safe=href.startsWith('/')||/^https:\/\//i.test(href);return `<section class="announcement"><div><span class="announcementBadge">${esc(a.title||'جديد')}</span><h3>${esc(a.title||'فرصة استثمارية جديدة')}</h3><p>${esc(a.text||'تابع أحدث أخبار المنصة والعروض المتاحة.')}</p></div>${safe?`<a class="btn smallBtn" href="${esc(href)}">${esc(a.ctaLabel||'عرض الخطط')}</a>`:''}</section>`}
+function publicOffers(){const o=window.__siteConfig?.offers;if(!o?.enabled||!Array.isArray(o.items)||!o.items.length)return '';return `<div class="offerGrid">${o.items.filter(x=>x&&x.active!==false).slice(0,4).map(x=>{const href=String(x.ctaUrl||'/plans');const safe=href.startsWith('/')||/^https:\/\//i.test(href);return `<article class="offerCard"><span>${esc(x.badge||'عرض')}</span><h3>${esc(x.title||'عرض')}</h3><p>${esc(x.text||'')}</p>${safe?`<a class="goldLink" href="${esc(href)}">${esc(x.ctaLabel||'استثمر الآن')} ←</a>`:''}</article>`}).join('')}</div>`}
+let __ciUser=null;
+async function session(){try{const d=await api('/user/me');const u=d?.user??d?.data?.user??d?.data??null;return u&&typeof u==='object'?u:null}catch(e){__ciUser=null;return null}}
+function authLayout(title,inner){document.title='CrypInvest | '+title;document.body.innerHTML=`<div class="authApp"><header class="authTop">${brand()}<a class="authBack" href="/">${icon('home')} الرئيسية</a></header><main class="authPage"><section class="authShowcase"><div class="showcaseLogo"><span>C</span><b>CrypInvest</b></div><div class="showcaseCoin">C</div><span class="kicker">منصة CrypInvest</span><h1>استثمر بذكاء<br><em>وابنِ مستقبلك</em></h1><p>إدارة الإيداعات والاستثمارات والسحوبات في واجهة واضحة وآمنة، مع تجربة مصممة للهاتف والكمبيوتر.</p><div class="showcaseStats"><span><b>24/7</b><small>متابعة الحساب</small></span><span><b>USDT</b><small>عملة أساسية</small></span><span><b>2FA</b><small>أمان الإدارة</small></span></div></section><section class="authPanel"><div class="authPanelHead"><span class="panelLogo">C</span><div><strong>${esc(title)}</strong><small>أدخل بياناتك للمتابعة</small></div></div>${inner}</section></main></div>`}
+async function forgotPassword(){authLayout('استعادة كلمة المرور',`<div class="authBox"><div class="authLogo">استعادة كلمة المرور</div><p class="muted">أدخل بريدك وسنرسل رابطًا لإعادة التعيين.</p><form id="forgotForm"><div class="field"><label>البريد الإلكتروني</label><input class="input" id="fe" type="email" required></div><button class="btn block">إرسال الرابط</button><p id="fm" class="muted small"></p><a class="goldLink" href="/login">العودة لتسجيل الدخول</a></form></div>`);$('#forgotForm').addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/auth/forgot-password',{method:'POST',body:JSON.stringify({email:$('#fe').value.trim()})});$('#fm').textContent=d.message}catch(x){$('#fm').textContent=x.message}})}
+async function resetPassword(){const t=new URLSearchParams(location.search).get('token')||'';authLayout('تعيين كلمة مرور جديدة',`<div class="authBox"><div class="authLogo">كلمة مرور جديدة</div><p class="muted">اختر كلمة مرور قوية من 8 أحرف أو أكثر.</p><form id="resetForm"><div class="field"><label>كلمة المرور الجديدة</label><input class="input" id="rp" type="password" minlength="8" required></div><div class="field"><label>تأكيد كلمة المرور</label><input class="input" id="rc" type="password" minlength="8" required></div><button class="btn block">حفظ كلمة المرور</button><p id="rm" class="muted small"></p></form></div>`);$('#resetForm').addEventListener('submit',async e=>{e.preventDefault();if($('#rp').value!==$('#rc').value)return $('#rm').textContent='كلمتا المرور غير متطابقتين.';try{const d=await api('/auth/reset-password',{method:'POST',body:JSON.stringify({token:t,password:$('#rp').value})});$('#rm').textContent=d.message;setTimeout(()=>location.href='/login',1000)}catch(x){$('#rm').textContent=x.message}})}
+async function verifyEmail(){const t=new URLSearchParams(location.search).get('token')||'';authLayout('تأكيد البريد الإلكتروني',`<div class="authBox"><div class="authLogo">تأكيد البريد</div><p id="vm" class="muted">جارٍ التحقق...</p><a class="btn block" href="/login">تسجيل الدخول</a></div>`);try{const d=await api('/auth/verify-email?token='+encodeURIComponent(t));$('#vm').textContent=d.message}catch(e){$('#vm').textContent=e.message}}
+function planIcon(i){return [icon('plans'),icon('market'),icon('home'),icon('deposit'),icon('withdraw')][i%5]}
+async function renderPlans(container){const d=await api('/plans').catch(()=>({plans:[]}));container.innerHTML=(d.plans||[]).map((x,i)=>{const min=x.minimumInvestment??x.minAmount??x.min??0,max=x.maximumInvestment??x.maxAmount??x.max??0,roi=x.roiPercent??x.roi??x.interestRate??0,dur=x.durationDays??x.duration??0;return `<article class="card plan plan-${i+1}"><div class="planGlow"></div><div class="planTop"><div class="planBadge">${planIcon(i)}</div><span class="planTag">${i===0?'مبتدئ':i===1?'متوازن':i===2?'متقدم':i===3?'مميز':'نخبة'}</span></div><h3>${esc(x.name||'خطة استثمار')}</h3><div class="rate">${pct(roi)}</div><p class="muted small planDesc">${esc(x.description||'خطة استثمارية مصممة لإدارة رأس المال')}<br><b>${usd(min)} — ${usd(max)}</b><br>${num(dur)} يوم</p><button class="btn smallBtn block inv" data-id="${esc(x._id)}" data-min="${esc(num(min))}" data-max="${esc(num(max))}">استثمر الآن <span>←</span></button></article>`}).join('')||`<div class="card emptyState"><p class="muted">لا توجد خطط نشطة حاليًا.</p></div>`;container.querySelectorAll('.inv').forEach(b=>b.addEventListener('click',()=>openInvestModal(b.dataset.id,b.dataset.min,b.dataset.max)))}
+function openInvestModal(planId,min,max){const old=$('#investModal');if(old)old.remove();document.body.insertAdjacentHTML('beforeend',`<div class="modalBackdrop" id="investModal"><section class="modalCard"><button class="modalClose" id="closeInvest" type="button" aria-label="إغلاق">×</button><div class="modalIcon">★</div><span class="kicker">تأكيد الاستثمار</span><h2>أدخل مبلغ الاستثمار</h2><p class="muted small">الحد الأدنى ${usd(min)} — الحد الأقصى ${usd(max)}</p><div class="amountField"><span>$</span><input id="investAmount" type="number" min="${esc(min)}" max="${esc(max)}" step="0.0001" placeholder="0.0000" inputmode="decimal"></div><p id="investMsg" class="formMsg"></p><button class="btn block" id="confirmInvest" type="button">تأكيد الاستثمار</button></section></div>`);const close=()=>$('#investModal')?.remove();$('#closeInvest').onclick=close;$('#investModal').addEventListener('click',e=>{if(e.target.id==='investModal')close()});$('#investAmount').focus();$('#confirmInvest').onclick=async()=>{const amount=num($('#investAmount').value);const msg=$('#investMsg');if(amount<num(min)||amount>num(max)){msg.textContent=`المبلغ يجب أن يكون بين ${usd(min)} و ${usd(max)}.`;return}const u=await session();if(!u){location.href='/login';return}const btn=$('#confirmInvest');btn.disabled=true;btn.textContent='جارٍ تنفيذ الطلب...';try{await api('/investments',{method:'POST',body:JSON.stringify({planId,amount})});msg.textContent='تم إرسال طلب الاستثمار بنجاح.';setTimeout(()=>location.href='/dashboard',650)}catch(e){msg.textContent=e.message||'تعذر تنفيذ الاستثمار.';btn.disabled=false;btn.textContent='تأكيد الاستثمار'}}}
+function renderTickers(items,containerId){const c=$(containerId);if(!c)return;c.innerHTML=(items||[]).slice(0,4).map(x=>{const up=Number(x.change24h)>=0;return `<div class="coinCard pricePulse"><div class="coinHead"><span class="coinLogo">${coinIcon(x.symbol)}</span><span class="coinName">${esc(x.symbol)}</span><span class="small ${up?'up':'down'}">${up?'▲':'▼'} ${up?'+':''}${esc(x.change24h)}%</span></div><div class="coinPrice">$${Number(x.price||0).toLocaleString('en-US',{maximumFractionDigits:8})}</div><div class="coinChange">تحديث تلقائي</div></div>`}).join('')}
+function drawMiniArea(c){const ctx=c?.getContext('2d');if(!ctx)return;const w=Math.max(280,c.clientWidth||600),h=92;c.width=w*2;c.height=h*2;ctx.setTransform(2,0,0,2,0,0);ctx.clearRect(0,0,w,h);const vals=[.18,.25,.22,.38,.31,.46,.42,.61,.57,.74,.68,.88];ctx.strokeStyle='#ffbf2f';ctx.lineWidth=2.5;ctx.beginPath();vals.forEach((n,i)=>{const x=8+i*(w-16)/(vals.length-1),y=h-8-n*(h-18);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();ctx.lineTo(w-8,h-7);ctx.lineTo(8,h-7);ctx.closePath();const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,'rgba(255,191,47,.28)');g.addColorStop(1,'rgba(255,191,47,0)');ctx.fillStyle=g;ctx.fill()}
+async function home(){window.__siteConfig=await api('/support').catch(()=>({}));layout('الصفحة الرئيسية',`<section class="hero"><div class="heroGrid"><div class="heroCopy"><div class="eyebrow">منصة استثمار وتداول العملات الرقمية</div><h1>استثمر في المستقبل<br><span>مع CrypInvest</span></h1><p>منصة لمتابعة الإيداعات والاستثمارات والسحوبات بواجهة واضحة ومصممة للهاتف والكمبيوتر.</p><div class="heroActions"><a class="btn" href="/register">ابدأ الآن</a><a class="btn secondary" href="/login">تسجيل الدخول</a></div></div><div class="heroArt"><div class="heroOrb"><span>C</span></div><div class="heroRing"></div><div class="heroBars"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="heroSpark s1"></div><div class="heroSpark s2"></div></div></div></section><section class="earningsCard card"><div class="earningsMain"><div><span class="kicker">إجمالي الأرباح</span><h2 id="homeProfit">$0.00</h2><span class="up small" id="homeProfitChange">+0.00%</span></div><div class="earningsBadge">USDT</div></div><canvas id="homeProfitChart" class="earningsChart" height="92"></canvas><div class="earningsFoot"><span>الرصيد المتاح <b id="homeAvailable">$0.00</b></span><a class="goldLink" href="/dashboard">عرض المحفظة ←</a></div></section>${publicAnnouncement()}${publicOffers()}<div class="sectionTitle"><h2>السوق الآن</h2><span class="muted small">4 عملات رئيسية</span></div><div class="marketRow" id="homeMarket"></div><div class="sectionTitle"><h2>خطط الاستثمار</h2><span class="muted small">اختر الخطة المناسبة لك</span></div><div class="cards" id="plans"></div>`,'home');const [m,u]=await Promise.all([api('/market/tickers').catch(()=>({tickers:[]})),session()]);renderTickers(m.tickers,'#homeMarket');renderPlans($('#plans'));const profit=num(u?.totalProfit??u?.profit??u?.profits);const available=num(u?.availableBalance);$('#homeProfit').textContent=usd(profit);$('#homeAvailable').textContent=usd(available);const change=num(u?.profitPercent??u?.profitChange24h??0);$('#homeProfitChange').textContent=(change>=0?'+':'')+change.toFixed(2)+'%';drawMiniArea($('#homeProfitChart'));window.clearInterval(window.__ciTickerTimer);window.__ciTickerTimer=window.setInterval(async()=>{try{const d=await api('/market/tickers');renderTickers(d.tickers,'#homeMarket')}catch{}},3000)}
+async function login(){authLayout('تسجيل الدخول',`<div class="authBox loginBox"><div class="authHeroIcon">C</div><h1>مرحبًا بعودتك</h1><p class="authSubtitle">سجّل الدخول لمتابعة استثماراتك وأموالك</p><form id="f"><div class="field inputIconField"><label>البريد الإلكتروني</label><div class="inputWrap">${icon('profile')}<input class="input" id="e" type="email" autocomplete="username" placeholder="example@email.com" required></div></div><div class="field inputIconField"><label>كلمة المرور</label><div class="inputWrap">${icon('lock')}<input class="input" id="p" type="password" autocomplete="current-password" placeholder="أدخل كلمة المرور" required></div></div><div class="field hidden" id="twoFactorField"><label>رمز التحقق بخطوتين</label><input class="input" id="c" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"></div><div class="authRow"><a class="goldLink" href="/forgot-password">نسيت كلمة المرور؟</a><span class="muted small">حساب آمن</span></div><button class="btn block authSubmit" id="loginBtn" type="submit">تسجيل الدخول</button><p class="formMsg" id="msg"></p><button class="btn secondary smallBtn hidden" id="resendVerify" type="button">إعادة إرسال رابط التحقق</button><div class="authDivider"><span>أو الدخول عبر</span></div><div class="socialStack"><button class="socialBtn socialGoogle" id="googleLogin" type="button">${icon('google')}<span>الدخول بواسطة Google</span></button><button class="socialBtn socialApple" id="appleLogin" type="button">${icon('apple')}<span>الدخول بواسطة Apple</span></button></div><p class="socialNote" id="socialMsg">أزرار Google وApple لا تصبح تسجيل دخول حقيقيًا إلا عند تهيئة OAuth من الخادم.</p><p class="authBottom">ليس لديك حساب؟ <a class="goldLink" href="/register">إنشاء حساب جديد</a></p></form></div>`);let submitting=false;$('#f').addEventListener('submit',async e=>{e.preventDefault();if(submitting)return;submitting=true;const btn=$('#loginBtn'),msg=$('#msg');btn.disabled=true;btn.textContent='جارٍ تسجيل الدخول...';msg.textContent='';try{const d=await api('/auth/login',{method:'POST',body:JSON.stringify({email:$('#e').value.trim(),password:$('#p').value,twoFactorCode:$('#c')?.value.trim()||''})});__ciUser=d?.user??d?.data?.user??null;const role=__ciUser?.role??d?.user?.role;location.replace(['super_admin','admin','support','finance','auditor','content_manager'].includes(role)?'/admin':'/dashboard')}catch(x){msg.textContent=x.message||'تعذر تسجيل الدخول. تحقق من البيانات وحاول مجددًا.';if(x.data?.requiresTwoFactor){$('#twoFactorField').classList.remove('hidden');$('#c').focus()}if(x.data?.code==='EMAIL_NOT_VERIFIED')$('#resendVerify').classList.remove('hidden');btn.disabled=false;btn.textContent='تسجيل الدخول';submitting=false}});$('#resendVerify').addEventListener('click',async()=>{try{const d=await api('/auth/resend-verification',{method:'POST',body:JSON.stringify({email:$('#e').value.trim()})});$('#msg').textContent=d.message||'تم إرسال رابط التحقق.'}catch(e){$('#msg').textContent=e.message}});initOAuthButtons()}
+async function initOAuthButtons(){const buttons={google:$('#googleLogin'),apple:$('#appleLogin')},msg=$('#socialMsg');Object.values(buttons).forEach(b=>{if(b){b.disabled=true;b.classList.add('unavailable')}});try{const d=await api('/auth/providers');const providers=d?.providers||d||{};for(const [name,b] of Object.entries(buttons)){const href=providers?.[name]?.url||providers?.[name];if(b&&typeof href==='string'&&(href.startsWith('/')||/^https:\/\//i.test(href))){b.disabled=false;b.classList.remove('unavailable');b.onclick=()=>{location.href=href}}}if(Object.values(buttons).some(b=>b&&!b.disabled)&&msg)msg.textContent='';}catch{if(msg)msg.textContent='الدخول عبر Google وApple غير مهيأ من الخادم حاليًا؛ لذلك تم تعطيل الأزرار الوهمية.'}}
+async function register(){authLayout('إنشاء حساب جديد',`<div class="authBox"><div class="authVisual"><span>✦</span></div><div class="authLogo">إنشاء حساب جديد</div><p class="muted">ابدأ حسابك في CrypInvest</p><form id="f"><div class="field"><label>الاسم الكامل</label><input class="input" id="n" autocomplete="name" required></div><div class="field"><label>البريد الإلكتروني</label><input class="input" id="e" type="email" autocomplete="email" required></div><div class="field"><label>كلمة المرور</label><input class="input" id="p" type="password" minlength="8" autocomplete="new-password" required></div><div class="field"><label>رمز الإحالة <span class="muted small">(اختياري)</span></label><input class="input" id="i" value="${esc(new URLSearchParams(location.search).get('ref')||new URLSearchParams(location.search).get('inviteCode')||'')}" autocomplete="off"></div><button class="btn block">إنشاء حساب</button><p class="muted small" id="m"></p><p class="small">لديك حساب؟ <a class="goldLink" href="/login">تسجيل الدخول</a></p></form></div>`);let registering=false;$('#f').addEventListener('submit',async e=>{e.preventDefault();if(registering)return;registering=true;const b=$('#f button');b.disabled=true;b.textContent='جارٍ إنشاء الحساب...';try{await api('/auth/register',{method:'POST',body:JSON.stringify({name:$('#n').value,email:$('#e').value,password:$('#p').value,inviteCode:$('#i').value})});location.href='/login'}catch(x){$('#m').textContent=x.message||'تعذر إنشاء الحساب. حاول مجددًا.';b.disabled=false;b.textContent='إنشاء حساب';registering=false}})}
+async function dashboard(){const u=await session();if(!u)return location.href='/login';layout('لوحة المستخدم',`<section class="balanceHero"><div class="balanceTop"><div><div class="muted small">الرصيد الإجمالي</div><div class="balanceAmount">${money(Number(u.availableBalance)+Number(u.reservedBalance))}</div><div class="muted small">المتاح ${money(u.availableBalance)} • المحجوز ${money(u.reservedBalance)}</div></div><a class="btn smallBtn" href="/deposit">إيداع</a></div></section><div class="balanceStats"><div class="miniStat"><div class="label">المتاح</div><div class="value">${money(u.availableBalance)}</div></div><div class="miniStat"><div class="label">المحجوز</div><div class="value">${money(u.reservedBalance)}</div></div><div class="miniStat"><div class="label">إجمالي الإيداعات</div><div class="value">${money(u.totalDeposited)}</div></div><div class="miniStat"><div class="label">إجمالي السحوبات</div><div class="value">${money(u.totalWithdrawn)}</div></div></div><div class="quickActions"><a class="card quick" href="/deposit"><span class="icon">${icon('deposit')}</span><b>إيداع</b><span class="muted small">إرسال USDT</span></a><a class="card quick" href="/withdraw"><span class="icon">${icon('withdraw')}</span><b>سحب</b><span class="muted small">سحب أموالك</span></a><a class="card quick" href="/plans"><span class="icon">${icon('plans')}</span><b>استثمار</b><span class="muted small">اختيار خطة</span></a><a class="card quick" href="/referrals"><span class="icon">${icon('referrals')}</span><b>الإحالات</b><span class="muted small">شارك رمزك</span></a></div><section class="card"><div class="sectionTitle"><h2>أحدث العمليات</h2><a class="muted small" href="/profile">عرض الكل</a></div><div class="tableWrap"><table class="table"><thead><tr><th>النوع</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th></tr></thead><tbody id="tx"><tr><td colspan="4" class="muted">جارٍ التحميل...</td></tr></tbody></table></div></section>`);try{const t=await api('/user/transactions?limit=8');$('#tx').innerHTML=t.items?.map(x=>`<tr><td>${esc(x.type)}</td><td class="${x.direction==='credit'?'up':'down'}">${x.direction==='credit'?'+':'-'}${money(x.amount)}</td><td>${statusBadge(x.status)}</td><td>${new Date(x.createdAt).toLocaleString('ar')}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">لا توجد عمليات.</td></tr>'}catch(e){$('#tx').innerHTML=`<tr><td colspan="4" class="muted">${esc(e.message)}</td></tr>`}}
+async function plans(){layout('خطط الاستثمار',`<div class="cards" id="plansList"></div>`,'plans');renderPlans($('#plansList'))}
+async function makeQr(v){const q=$('#qr');if(!q)return;q.innerHTML='';if(!v){q.innerHTML='<div class="qrUnavailable">لا يوجد عنوان إيداع صالح</div>';return}if(window.QRCode&&typeof window.QRCode.toCanvas==='function'){const c=document.createElement('canvas');await window.QRCode.toCanvas(c,String(v),{width:180,margin:1,errorCorrectionLevel:'M',color:{dark:'#04101c',light:'#ffffff'}});q.appendChild(c);q.dataset.value=String(v);return}q.innerHTML='<div class="qrUnavailable">تعذر تحميل مولد QR؛ لا تستخدم رمزًا غير ظاهر.</div>';q.dataset.value=String(v)}
+async function deposit(){const u=await session();if(!u)return location.href='/login';const cfg=window.__siteConfig||(await api('/support').catch(()=>({})));const lim=cfg.limits||{};layout('الإيداع',`<div class="grid2"><section class="card"><h2>إيداع العملات الرقمية</h2><p class="hint">كل إيداع يبقى <b>قيد المراجعة</b> ولا يُضاف إلى رصيدك إلا بعد موافقة الإدارة والتحقق من المعاملة على الشبكة.</p><div class="limitNotice">حد الإيداع: ${esc(lim.depositMin||'10')} – ${esc(lim.depositMax||'100000')} USDT</div><div class="field"><label>الشبكة</label><div class="networkTabs" id="networkTabs"><button type="button" class="active" data-network="TRC20">TRC20</button><button type="button" data-network="ERC20">ERC20</button><button type="button" data-network="BEP20">BEP20</button></div><select class="select hidden" id="n"><option>TRC20</option><option>ERC20</option><option>BEP20</option></select></div><div id="walletArea"><p class="muted small">جارٍ جلب محفظة الأدمن...</p></div></section><section class="card"><h2>تأكيد الإيداع</h2><div class="field"><label>المبلغ</label><input class="input" id="a" type="number" min="${esc(lim.depositMin||'10')}" max="${esc(lim.depositMax||'100000')}" step="0.000001" required></div><div class="field"><label>TX Hash</label><input class="input" id="h" autocomplete="off" required></div><button class="btn block" id="send" type="button">إرسال طلب الإيداع</button><p class="muted small" id="m"></p></section></div>`);async function load(){const btn=$('#send');try{const d=await api('/payment-wallet?currency=USDT&network='+encodeURIComponent($('#n').value));const w=d.wallet;$('#walletArea').innerHTML=`<div class="walletBox"><div class="qr" id="qr"></div><div class="walletAddress" id="addr">${esc(w.address)}</div><div class="copyRow"><button class="btn secondary smallBtn" id="copyWallet" type="button">نسخ العنوان</button><span class="muted small">تأكيدات مطلوبة: ${esc(w.confirmations)}</span></div>${w.blockchainConfigured?'<p class="hint">التحقق الحي على الشبكة مهيأ.</p>':'<p class="warnText">⚠️ التحقق الحي على هذه الشبكة غير مهيأ بعد. لا ترسل أموالًا حقيقية.</p>'}</div>`;makeQr(w.address);document.querySelectorAll('#networkTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#networkTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#n').value=b.dataset.network;load()}));$('#copyWallet').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(w.address);$('#copyWallet').textContent='تم النسخ'}catch{$('#copyWallet').textContent='انسخ يدويًا'}});btn.disabled=!w.blockchainConfigured;btn.title=w.blockchainConfigured?'':'لا يمكن إرسال إيداع حقيقي قبل إعداد التحقق على الشبكة.';if(!w.blockchainConfigured)$('#m').textContent='هذه الشبكة غير جاهزة لاستقبال أموال حقيقية حتى يكتمل إعداد RPC والعقد.'}catch(e){$('#walletArea').innerHTML=`<div class="card"><p class="muted">${esc(e.message)}</p></div>`;btn.disabled=true}}$('#n').addEventListener('change',load);await load();$('#send').addEventListener('click',async()=>{if($('#send').disabled)return;const amount=$('#a').value.trim(),hash=$('#h').value.trim();if(!amount||!hash)return $('#m').textContent='أدخل المبلغ وTX Hash.';$('#send').disabled=true;try{await api('/deposits',{method:'POST',body:JSON.stringify({amount,currency:'USDT',network:$('#n').value,txHash:hash})});$('#m').textContent='تم إرسال الطلب للتحقق والموافقة من الإدارة.';$('#h').value='';}catch(e){$('#m').textContent=e.message}finally{await load()}})}
+async function withdraw(){const u=await session();if(!u)return location.href='/login';const cfg=window.__siteConfig||(await api('/support').catch(()=>({})));const lim=cfg.limits||{};layout('السحب',`<div class="grid2"><section class="card"><h2>سحب الأموال</h2><p class="muted">الرصيد المتاح: <b>${money(u.availableBalance)}</b></p><div class="limitNotice">حد السحب: ${esc(lim.withdrawMin||'10')} – ${esc(lim.withdrawMax||'100000')} USDT</div><div class="field"><label>المبلغ</label><input class="input" id="a" type="number" min="${esc(lim.withdrawMin||'10')}" max="${esc(lim.withdrawMax||'100000')}" step="0.000001"></div><div class="field"><label>الشبكة</label><div class="networkTabs" id="withdrawNetworkTabs"><button type="button" class="active" data-network="TRC20">TRC20</button><button type="button" data-network="ERC20">ERC20</button><button type="button" data-network="BEP20">BEP20</button></div><select class="select hidden" id="n"><option>TRC20</option><option>ERC20</option><option>BEP20</option></select></div><div class="field"><label>عنوان المحفظة المستلمة</label><input class="input" id="d" autocomplete="off"></div><button class="btn block" id="go">إرسال طلب السحب للموافقة</button><p class="muted small" id="m"></p></section><section class="card"><h2>آخر طلبات السحب</h2><div id="withdrawals"><p class="muted small">جارٍ التحميل...</p></div></section></div>`);try{const d=await api('/withdrawals?limit=6');$('#withdrawals').innerHTML=d.items?.map(x=>`<div class="listItem"><span>${money(x.amount)} • ${esc(x.network)}</span><span>${statusBadge(x.status)}</span></div>`).join('')||'<p class="muted small">لا توجد طلبات.</p>'}catch{}document.querySelectorAll('#withdrawNetworkTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#withdrawNetworkTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#n').value=b.dataset.network;}));$('#go').addEventListener('click',async()=>{try{await api('/withdrawals',{method:'POST',body:JSON.stringify({amount:$('#a').value,network:$('#n').value,destination:$('#d').value,currency:'USDT'})});$('#m').textContent='تم إرسال طلب السحب. سيبقى قيد المراجعة ولن يُنفذ إلا بعد موافقة الإدارة.'}catch(e){$('#m').textContent=e.message}})}
+async function referrals(){const u=await session();if(!u)return location.href='/login';const ref=location.origin+'/register?ref='+u.referralCode;layout('برنامج الإحالات',`<section class="refGiftBanner"><div class="giftVisual">🎁</div><div><span class="kicker">برنامج المكافآت</span><h2>ادعُ أصدقاءك واحصل على مكافآتك</h2><p>شارك رابطك الخاص وتابع الإحالات والمكافآت من مكان واحد.</p></div><div class="giftGlow"></div></section><section class="card refShareCard"><div class="sectionTitle"><h2>شارك رابطك</h2><span class="muted small">دعوة أصدقاء جدد</span></div><div class="walletAddress" id="refLink">${esc(ref)}</div><div class="shareActions"><button class="iconShare telegram" data-share="telegram" type="button">✈</button><button class="iconShare whatsapp" data-share="whatsapp" type="button">◉</button><button class="iconShare facebook" data-share="facebook" type="button">f</button><button class="iconShare xshare" data-share="x" type="button">𝕏</button><button class="iconShare native" data-share="native" type="button">${icon('share')}</button><button class="btn" id="copyRef" type="button">نسخ الرابط</button></div><div class="grid3 refStats" style="margin-top:14px"><div class="miniStat"><div class="label">الإحالات المباشرة</div><div class="value" id="direct">-</div></div><div class="miniStat"><div class="label">النشطة</div><div class="value" id="active">-</div></div><div class="miniStat"><div class="label">الإجمالي</div><div class="value" id="total">-</div></div></div></section><section class="card"><h2>شجرة الإحالات</h2><div class="refTree" id="tree"><p class="muted small">جارٍ التحميل...</p></div></section>`,'referrals');const share=async type=>{const text='انضم إلى CrypInvest عبر رابط الإحالة الخاص بي';const enc=encodeURIComponent(ref);const map={telegram:'https://t.me/share/url?url='+enc+'&text='+encodeURIComponent(text),whatsapp:'https://wa.me/?text='+encodeURIComponent(text+' '+ref),facebook:'https://www.facebook.com/sharer/sharer.php?u='+enc,x:'https://twitter.com/intent/tweet?text='+encodeURIComponent(text)+'&url='+enc};if(type==='native'&&navigator.share){try{await navigator.share({title:'CrypInvest',text,url:ref})}catch{}return}if(map[type])window.open(map[type],'_blank','noopener,noreferrer')};$('#copyRef').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(ref);$('#copyRef').textContent='تم النسخ'}catch{$('#copyRef').textContent='انسخ يدويًا'}});document.querySelectorAll('[data-share]').forEach(b=>b.onclick=()=>share(b.dataset.share));try{const [s,t]=await Promise.all([api('/user/referrals/stats'),api('/user/referrals/tree?levels=3')]);$('#direct').textContent=num(s?.stats?.direct);$('#active').textContent=num(s?.stats?.active);$('#total').textContent=num(s?.stats?.total);function addNodes(nodes,depth=0){return (nodes||[]).map(n=>`<div class="refNode" style="margin-right:${Math.min(depth,6)*12}px"><span>${esc(n.name)} <span class="muted small">${esc(n.email)}</span></span>${statusBadge(n.status)}</div>${n.children?.length?addNodes(n.children,depth+1):''}`).join('')};$('#tree').innerHTML=addNodes(t.tree)||'<p class="muted small">لا توجد إحالات حتى الآن.</p>'}catch(e){$('#tree').innerHTML=`<p class="muted small">${esc(e.message)}</p>`}}
+async function notifications(){const u=await session();if(!u)return location.href='/login';layout('الإشعارات',`<section class="card"><div class="sectionTitle"><h2>الإشعارات</h2><span class="muted small">آخر أخبار وتحديثات الحساب</span></div><div id="notificationList"><p class="muted">جارٍ التحميل...</p></div></section>`,'notifications');try{const d=await api('/user/notifications');$('#notificationList').innerHTML=(d.items||[]).map(x=>`<div class="listItem"><div><b>${esc(x.title)}</b><div class="muted small">${esc(x.message)}</div></div><span class="muted small">${new Date(x.createdAt).toLocaleString('ar')}</span></div>`).join('')||'<p class="muted">لا توجد إشعارات.</p>'}catch(e){$('#notificationList').innerHTML=`<p class="muted">${esc(e.message)}</p>`}}
+async function support(){
+ const u=await session();
+ if(!u){location.href='/login';return}
+ layout('الدعم',`<div class="grid2"><section class="card"><h2>فتح تذكرة دعم</h2><form id="supportCreate"><div class="field"><label>الموضوع</label><input class="input" id="ss" maxlength="200" required></div><div class="field"><label>الرسالة</label><textarea class="input textarea" id="sm" maxlength="5000" required></textarea></div><button class="btn" type="submit">إرسال</button></form><p id="supportMsg" class="formMsg"></p></section><section class="card"><h2>تذاكر الدعم</h2><div id="ticketList"><p class="muted">جارٍ التحميل...</p></div></section></div>`,'support');
+ async function load(){try{const d=await api('/user/support/tickets');$('#ticketList').innerHTML=(d.items||[]).map(t=>`<article class="ticket"><div class="listItem"><b>${esc(t.subject)}</b>${statusBadge(t.status)}</div>${(t.messages||[]).slice(-3).map(m=>`<div class="listItem"><span class="muted small">${new Date(m.createdAt||Date.now()).toLocaleString('ar')}</span><span>${esc(m.body)}</span></div>`).join('')}<button class="btn secondary smallBtn ticketReply" data-id="${esc(t._id)}" type="button">رد</button></article>`).join('')||'<p class="muted">لا توجد تذاكر.</p>';document.querySelectorAll('.ticketReply').forEach(b=>b.onclick=async()=>{const message=await askText('إضافة رد على التذكرة','اكتب ردك هنا...');if(!message)return;try{await api('/user/support/tickets/'+b.dataset.id+'/reply',{method:'POST',body:JSON.stringify({message})});notify('تم إرسال الرد بنجاح');load()}catch(e){notify(e.message||'تعذر إرسال الرد')}})}catch(e){$('#ticketList').innerHTML=`<p class="muted">${esc(e.message)}</p>`}}
+ $('#supportCreate').addEventListener('submit',async e=>{e.preventDefault();const msg=$('#supportMsg');try{await api('/user/support/tickets',{method:'POST',body:JSON.stringify({subject:$('#ss').value.trim(),message:$('#sm').value.trim()})});$('#ss').value='';$('#sm').value='';msg.textContent='تم إرسال التذكرة إلى فريق الدعم.';load()}catch(x){msg.textContent=x.message||'تعذر إرسال التذكرة.'}});load()
+}
+async function market(){layout('السوق',`<section class="marketTools"><div class="searchBox">${icon('search')}<input id="marketSearch" placeholder="ابحث عن عملة..." autocomplete="off"></div><div class="marketTabs"><button class="active" data-filter="all" type="button">الكل</button><button data-filter="fav" type="button">المفضلة</button><button data-filter="gainers" type="button">الرابحة</button><button data-filter="losers" type="button">الخاسرة</button></div></section><div class="marketRow" id="markets"></div><section class="card chartCard"><div class="sectionTitle"><div><span class="kicker">تحليل السوق</span><h2>حركة السوق</h2></div><span class="muted small">BTC / USDT</span></div><canvas id="chart" class="chart" height="220"></canvas><div class="rangeRow"><button class="btn secondary smallBtn range active" data-points="30" type="button">1D</button><button class="btn secondary smallBtn range" data-points="60" type="button">1W</button><button class="btn secondary smallBtn range" data-points="120" type="button">1M</button></div></section>`,'market');window.__marketFilter='all';async function load(){const d=await api('/market/tickers');window.__tickers=d.tickers||[];renderMarket()}function renderMarket(){const q=String($('#marketSearch')?.value||'').trim().toLowerCase();let items=[...(window.__tickers||[])];if(q)items=items.filter(x=>String(x.symbol||'').toLowerCase().includes(q)||String(x.name||'').toLowerCase().includes(q));if(window.__marketFilter==='gainers')items=items.filter(x=>num(x.change24h)>0).sort((a,b)=>num(b.change24h)-num(a.change24h));if(window.__marketFilter==='losers')items=items.filter(x=>num(x.change24h)<0).sort((a,b)=>num(a.change24h)-num(b.change24h));if(window.__marketFilter==='fav'){const fav=JSON.parse(localStorage.getItem('ci_favs')||'[]');items=items.filter(x=>fav.includes(String(x.symbol||'').toUpperCase()))}$('#markets').innerHTML=items.map(x=>{const change=num(x.change24h),up=change>=0,symbol=String(x.symbol||'').toUpperCase(),fav=JSON.parse(localStorage.getItem('ci_favs')||'[]').includes(symbol);return `<article class="coinCard marketCoin"><div class="coinHead"><button class="favBtn ${fav?'active':''}" data-symbol="${esc(symbol)}" type="button" aria-label="${fav?'إزالة من المفضلة':'إضافة إلى المفضلة'}">${fav?'★':'☆'}</button><span class="coinLogo">${coinIcon(symbol)}</span><span class="coinName"><b>${esc(symbol)}</b><small>${esc(String(x.name||symbol))}</small></span><span class="changePill ${up?'up':'down'}">${up?'+':''}${change.toFixed(2)}%</span></div><div class="coinPrice">${usd(x.price)}</div><div class="coinChange ${up?'up':'down'}">${up?'▲':'▼'} ${up?'+':''}${change.toFixed(2)}% <span>• حجم 24س: ${usd(x.volume24h)}</span></div></article>`}).join('')||'<div class="card emptyState">لا توجد عملات مطابقة.</div>';document.querySelectorAll('.favBtn').forEach(b=>b.onclick=()=>{const fav=new Set(JSON.parse(localStorage.getItem('ci_favs')||'[]'));const sym=b.dataset.symbol;fav.has(sym)?fav.delete(sym):fav.add(sym);localStorage.setItem('ci_favs',JSON.stringify([...fav]));renderMarket()})}async function draw(points){try{const h=await api('/market/history/BTC?points='+points),c=$('#chart'),ctx=c?.getContext('2d');if(!c||!ctx)return;const w=c.clientWidth||700,hh=220;c.width=Math.max(1,w*2);c.height=hh*2;ctx.setTransform(2,0,0,2,0,0);ctx.strokeStyle='#ffb31b';ctx.lineWidth=3;ctx.beginPath();const vals=(h.data||[]).map(x=>num(x.value));if(!vals.length){ctx.clearRect(0,0,w,hh);return}const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(1,max-min);vals.forEach((v,i)=>{const x=i*(w/Math.max(1,vals.length-1)),y=hh-20-(v-min)/span*(hh-45);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke()}catch{}}document.querySelectorAll('.marketTabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.marketTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');window.__marketFilter=b.dataset.filter;renderMarket()}));$('#marketSearch')?.addEventListener('input',renderMarket);document.querySelectorAll('.range').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.range').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw(Number(b.dataset.points))}));await load();await draw(30)}
+async function profile(){const u=await session();if(!u){location.href='/login';return}layout('الملف الشخصي',`<section class="profileHero card"><div class="profileIdentity"><div class="avatarBig">${esc((u.name||'U').slice(0,1).toUpperCase())}</div><div><span class="kicker">الحساب</span><h2>${esc(u.name||'المستخدم')}</h2><p class="muted small">${esc(u.email||'')}</p></div></div><div class="profileMeta"><span>${statusBadge(u.status||'active')}</span><span class="profileId">ID: ${esc(u._id||u.id||'—')}</span></div></section><section class="profileMenu card"><div class="profileMenuTitle"><span>إعدادات الحساب</span><span class="muted small">CrypInvest</span></div><a href="#personal" class="profileRow"><span class="rowIcon">${icon('user')}</span><span><b>المعلومات الشخصية</b><small>الاسم والبريد وحالة الحساب</small></span><i>‹</i></a><a href="#security" class="profileRow"><span class="rowIcon">${icon('key')}</span><span><b>الأمان والحماية</b><small>كلمة المرور وحماية الجلسة</small></span><i>‹</i></a><a href="#kyc" class="profileRow"><span class="rowIcon">${icon('shield')}</span><span><b>التحقق من الهوية (KYC)</b><small>بيانات التحقق والمراجعة</small></span><i>‹</i></a><a href="/notifications" class="profileRow"><span class="rowIcon">${icon('notifications')}</span><span><b>الإشعارات</b><small>التنبيهات وتحديثات الحساب</small></span><i>‹</i></a><a href="#language" class="profileRow"><span class="rowIcon">${icon('globe')}</span><span><b>اللغة</b><small>العربية</small></span><i>‹</i></a><a href="/support" class="profileRow"><span class="rowIcon">${icon('support')}</span><span><b>تواصل معنا</b><small>خدمة العملاء والدعم</small></span><i>‹</i></a><a href="/support" class="profileRow"><span class="rowIcon">${icon('support')}</span><span><b>مركز المساعدة</b><small>الأسئلة والدعم الفني</small></span><i>‹</i></a><button class="profileRow dangerRow" id="profileLogout" type="button"><span class="rowIcon">${icon('logout')}</span><span><b>تسجيل الخروج</b><small>إنهاء الجلسة الحالية</small></span><i>‹</i></button></section><section class="card profileEditor" id="personal"><div class="sectionTitle"><h2>المعلومات الشخصية</h2><span class="muted small">تعديل الاسم</span></div><div class="field"><label>الاسم</label><input class="input" id="n" value="${esc(u.name||'')}"></div><div class="field"><label>البريد الإلكتروني</label><input class="input" value="${esc(u.email||'')}" disabled></div><button class="btn" id="save" type="button">حفظ التغييرات</button><p id="profileMsg" class="formMsg"></p></section><section class="card profileEditor" id="kyc"><div class="sectionTitle"><h2>التحقق من الهوية KYC</h2><span class="muted small">إرسال للمراجعة</span></div><form id="kycForm"><div class="field"><label>الاسم القانوني</label><input class="input" id="kf" required></div><div class="field"><label>الدولة</label><input class="input" id="kc" required></div><div class="field"><label>نوع الوثيقة</label><select class="select" id="kt"><option value="passport">Passport</option><option value="national_id">National ID</option><option value="drivers_license">Driver's License</option></select></div><div class="field"><label>آخر 4 أحرف/أرقام</label><input class="input" id="kl" maxlength="4" required></div><button class="btn" type="submit">إرسال للمراجعة</button><p id="kycMsg" class="formMsg"></p></form></section><section class="card profileEditor" id="security"><div class="sectionTitle"><h2>الأمان والحماية</h2><span class="muted small">تغيير كلمة المرور</span></div><div class="grid2"><div class="field"><label>كلمة المرور الحالية</label><input class="input" id="c" type="password" autocomplete="current-password"></div><div class="field"><label>كلمة المرور الجديدة</label><input class="input" id="p" type="password" autocomplete="new-password"></div></div><button class="btn" id="pass" type="button">تغيير كلمة المرور</button><p id="m" class="formMsg"></p></section><section class="card profileEditor" id="language"><div class="sectionTitle"><h2>اللغة</h2><span class="muted small">واجهة CrypInvest بالعربية</span></div><div class="languageChip">العربية <span>RTL</span></div></section>`,'profile');$('#save').addEventListener('click',async()=>{const msg=$('#profileMsg');try{const name=$('#n').value.trim();if(!name){msg.textContent='اكتب الاسم أولًا.';return}await api('/user/profile',{method:'PATCH',body:JSON.stringify({name})});msg.textContent='تم حفظ التغييرات بنجاح.'}catch(e){msg.textContent=e.message||'تعذر الحفظ.'}});$('#kycForm').addEventListener('submit',async e=>{e.preventDefault();const msg=$('#kycMsg');try{await api('/user/kyc',{method:'PATCH',body:JSON.stringify({fullName:$('#kf').value.trim(),country:$('#kc').value.trim(),documentType:$('#kt').value,documentNumberLast4:$('#kl').value.trim()})});msg.textContent='تم إرسال KYC للمراجعة.'}catch(x){msg.textContent=x.message||'تعذر إرسال KYC.'}});$('#pass').addEventListener('click',async()=>{try{await api('/user/change-password',{method:'POST',body:JSON.stringify({currentPassword:$('#c').value,newPassword:$('#p').value})});$('#m').textContent='تم تغيير كلمة المرور وإبطال الجلسة الحالية.';setTimeout(()=>location.href='/login',900)}catch(e){$('#m').textContent=e.message||'تعذر تغيير كلمة المرور.'}});$('#profileLogout').addEventListener('click',logout)}
+(async()=>{const p=location.pathname.replace(/\/$/,'')||'/';try{if(p==='/'||p==='/index.html')return home();if(p==='/login'||p==='/login.html')return login();if(p==='/register'||p==='/register.html')return register();if(p==='/forgot-password')return forgotPassword();if(p==='/reset-password')return resetPassword();if(p==='/verify-email')return verifyEmail();if(p==='/dashboard'||p==='/dashboard.html')return dashboard();if(p==='/more')return dashboard();if(p==='/plans')return plans();if(p==='/deposit'||p==='/deposit.html')return deposit();if(p==='/withdraw'||p==='/withdraw.html')return withdraw();if(p==='/referrals'||p==='/referrals.html')return referrals();if(p==='/profile'||p==='/profile.html')return profile();if(p==='/market'||p==='/market.html')return market();if(p==='/notifications'||p==='/notifications.html')return notifications();if(p==='/support'||p==='/support.html')return support();return home()}catch(e){document.body.innerHTML=`<div style="padding:30px;font-family:Tahoma"><h2>حدث خطأ</h2><p>${esc(e.message)}</p><a class="btn" href="/">العودة للرئيسية</a></div>`}})();
